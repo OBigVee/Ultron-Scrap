@@ -32,8 +32,8 @@
 - [x] Identify target websites `#requirements`
     - Determine data to be scraped
     - Check website scraping policies
-- Define frequency of scraping `#requirements`
-- Specify data storage formats `#requirements`
+- [ ] Define frequency of scraping `#requirements`
+- [ ] Specify data storage formats `#requirements`
 # System Design
 - Design client interface `#design`
     - Web UI layout
