@@ -29,13 +29,13 @@
 ## Task Breakdown
 # Requirements Gathering
 
-- [x] Identify target websites `#requirements`
+- [ ] Identify target websites `#requirements`
     - Determine data to be scraped
     - Check website scraping policies
 - [ ] Define frequency of scraping `#requirements`
 - [ ] Specify data storage formats `#requirements`
 # System Design
-- Design client interface `#design`
+- [ ] Design client interface `#design`
     - Web UI layout
     - API endpoints
 - Architect load balancer `#design`
