@@ -1,6 +1,9 @@
 package main
 
 import (
+	// "fmt"
+	//"context"
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -15,44 +18,79 @@ import (
 )
 
 
+type VisitFunc func (io.Reader) error
+
+type Visit struct{
+    link string
+    visitFunc VisitFunc
+}
+
 type VisitReq struct{
-    links []string
+    links [] string
+    visitFunc VisitFunc
 }
 
-type Manager struct{}
+func NewVisitRequest(links []string) VisitReq  {
+    return VisitReq{
+        links: links,
+        visitFunc: func(r io.Reader) error {
+            fmt.Println("========================")
+            fmt.Println("doing the visitFunc over the body ")
+            b, err := io.ReadAll(r)
+            if err != nil{
+                return err
+            }
+            fmt.Println(string(b))
+            fmt.Println("===================")
+            return nil
+        },
+    }
+}
 
-func NewManger() actor.Producer{
+type Visitor struct{
+    managerPID *actor.PID
+    URL *url.URL
+    visitFn VisitFunc
+}
+
+func NewVisitor(url *url.URL, mpid *actor.PID, visitFn VisitFunc) actor.Producer{
+    //baseURL, err := url.Parse(link)
+
     return func () actor.Receiver {
-        return &Manager{}
+        return &Visitor{
+            URL: url,
+            managerPID: mpid,
+            visitFn: visitFn,
+        }
     }
 }
 
-func (m *Manager) Receive(c *actor.Context){
-    switch msg := c.Message().(type){
-    case VisitReq:
-        m.handlevisitReqeust(msg)
+func (v *Visitor) Receive(c *actor.Context){
+    switch  c.Message().(type){
+    // case VisitReq:
+    //     slog.Info("vistor started work", "url", msg.links)
     case actor.Started:
-        slog.Info("manager started")
+        slog.Info("vister started", "url", v.URL)
+        links, err := v.doVisit(v.URL.String(), v.visitFn)
+        if err != nil {
+            slog.Error("visit error", "err", err)
+            return 
+        }
+        c.Send(v.managerPID, NewVisitRequest(links))
+        c.Engine().Poison(c.PID())
     case actor.Stopped:
+        slog.Info("vistor stopped", "url", v.URL) 
     }
 }
 
-func (m *Manager) handlevisitReqeust(msg VisitReq) error {
-    for _, link := range msg.links  {
-        slog.Info("(Visiting url)", "url", link)
-    }
-    return nil
-}
-
-
-func extracLinks(body io.Reader) []string {
+func (v *Visitor) extracLinks(body io.Reader) ([]string, error) {
     links := make([]string, 0)
     tokenizer := html.NewTokenizer(body)
 
     for {
         tokenType := tokenizer.Next()
         if tokenType == html.ErrorToken {
-            return links
+            return links, nil
         }
 
         if tokenType == html.StartTagToken {
@@ -60,62 +98,112 @@ func extracLinks(body io.Reader) []string {
             if token.Data == "a" {
                 for _, attr := range token.Attr {
                     if attr.Key == "href" {
-                        links = append(links, attr.Val)
+                        // if attr.Val[0] == '#' {
+                        //     continue
+                        // }
+                        linksUrl, err :=  url.Parse(attr.Val)
+                    if err != nil{
+                        return links, err
+                    }
+                    actualLink := v.URL.ResolveReference(linksUrl)
+                        links = append(links, actualLink.String())
                     }
                 }
             }
         }
     }
- //   return links
 }
-func main() {
-    fmt.Println("Ultron! Do you read the world?")
-    baseUrl, err :=  url.Parse("https://github.com/obigvee")
+
+func (v *Visitor) doVisit(link string, visit VisitFunc) ([]string, error){
+    baseUrl, err :=  url.Parse(link)
     if err != nil{
-        log.Fatal(err)
+        return []string{}, err
     }
     resp, err := http.Get(baseUrl.String())
     if err != nil{
-        log.Fatal(err)
+        return []string{}, err
     }
-    // b, err := io.ReadAll(resp.Body)
 
-    // if err != nil{
-    //     log.Fatal(err)
-    // }
-    links := extracLinks((resp.Body))
-    for _, link := range links{
-        linksUrl, err :=  url.Parse(link)
-        if err != nil{
-            log.Fatal(err)
+    w := &bytes.Buffer{}
+    r := io.TeeReader(resp.Body, w)
+
+    
+    links, err := v.extracLinks(r)
+    if err != nil{
+        return []string{}, err
+    }
+
+
+    if err := visit(w); err != nil{
+        return []string{} , err
+    }
+    return links, nil
+}
+
+type Manager struct{
+    visitedHistory map[string]bool
+    visitors map [*actor.PID]bool
+}
+
+func NewManger() actor.Producer{
+    return func () actor.Receiver {
+        return &Manager{
+            visitors: make(map[*actor.PID]bool),
+            visitedHistory: make(map[string]bool),
         }
-        actualLink := baseUrl.ResolveReference(linksUrl)
-        fmt.Println(actualLink)
-
     }
+}
 
-    // fmt.Println(extracLinks(resp.Body))
-    return 
+func (m *Manager) Receive(c *actor.Context){
+    switch msg := c.Message().(type){
+    case VisitReq:
+        m.handlevisitReqeust(c, msg)
+    case actor.Started:
+        slog.Info("manager started")
+    case actor.Stopped:
+    }
+}
 
+func (m *Manager) handlevisitReqeust(c *actor.Context ,msg VisitReq) error {
+    for _, link := range msg.links  {
+        if _, ok := m.visitedHistory[link]; !ok{
+            slog.Info("(Visiting url)", "url", link)
+            baseURL, err := url.Parse(link)
+            if err != nil{
+                return err
+            }
+        // spawn a child
+        c.SpawnChild(NewVisitor(baseURL, c.PID(), msg.visitFunc), "visitor/"+link) 
+        m.visitedHistory[link] = true
+}
+    }
+    return nil
+}
+
+
+// for _, link := range links{
+//     linksUrl, err :=  url.Parse(link)
+//     if err != nil{
+//         log.Fatal(err)
+//     }
+//     actualLink := baseUrl.ResolveReference(linksUrl)
+//     fmt.Println(actualLink)
+
+// }
+
+func main() {
     e, err := actor.NewEngine(actor.NewEngineConfig())
     if err != nil {
         log.Fatal(err)
     }
-
     // spawn it amd return a PID
     pid := e.Spawn(NewManger(), "manager")
-    time.Sleep(time.Millisecond * 500)
+
+    time.Sleep(time.Millisecond * 200)
+    
     // send a message to the pid
-    e.Send(pid, VisitReq{links: []string{"https://obigvee.com"}})
-
-
-    // e.SpawnFunc(func (c *actor.Context)  {
-    //     switch msg := c.Message().(type){
-    //     case actor.Started:
-    //         fmt.Println("started")
-    //         _ = msg
-    //     }
-    // }, "foo")
-
-        time.Sleep(time.Second * 10)
+    e.Send(pid, NewVisitRequest([]string{"https://www.linkedin.com/in/victor-adedeji/"}))
+    e.Send(pid, NewVisitRequest([]string{"https://www.jumia.com.ng/"}))
+    //e.Send(pid, VisitReq{links: []string{"https://github.com/obigvee"}})
+        time.Sleep(time.Second * 1000)
 }
